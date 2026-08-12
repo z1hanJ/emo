@@ -4,12 +4,37 @@
 import os
 import json
 import sys
-import jieba
+import traceback
 
 try:
     from kivy.utils import platform
 except ImportError:
     platform = 'windows'
+
+# jieba初始化：Android端需要特殊处理字典路径
+_jieba_ok = False
+try:
+    import jieba
+    if platform == 'android':
+        # Android: jieba字典在app打包目录中
+        _app_dir = os.path.dirname(os.path.abspath(__file__))
+        _dict_path = os.path.join(_app_dir, 'jieba', 'dict.txt')
+        if os.path.exists(_dict_path):
+            jieba.set_dictionary(_dict_path)
+        # 也尝试常见Android路径
+        else:
+            for p in [
+                '/data/data/org.example.moodbot/files/app/jieba/dict.txt',
+                os.path.join(_app_dir, 'dict.txt'),
+            ]:
+                if os.path.exists(p):
+                    jieba.set_dictionary(p)
+                    break
+    jieba.initialize()
+    _jieba_ok = True
+except Exception as e:
+    print(f"[WARN] jieba初始化失败: {e}")
+    _jieba_ok = False
 
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
@@ -30,18 +55,26 @@ if platform != 'android':
     Config.set('graphics', 'minimum_width', '300')
     Config.set('graphics', 'minimum_height', '500')
 
-Config.set('kivy', 'log_dir', os.path.dirname(os.path.abspath(__file__)))
-Config.set('kivy', 'log_level', 'info')
-Config.set('kivy', 'keyboard_mode', 'system')
-Config.set('kivy', 'keyboard_layout', 'qwerty')
-Config.set('input', 'keyboard', 'system')
+# Android端跳过可能导致问题的Config设置
+if platform != 'android':
+    Config.set('kivy', 'log_dir', os.path.dirname(os.path.abspath(__file__)))
+    Config.set('kivy', 'log_level', 'info')
+    Config.set('kivy', 'keyboard_mode', 'system')
+    Config.set('kivy', 'keyboard_layout', 'qwerty')
+    Config.set('input', 'keyboard', 'system')
 
 def get_app_root():
     if hasattr(sys, '_MEIPASS'):
         return sys._MEIPASS
     if platform == 'android':
-        from android import app
-        return app.get_app_root_dir()
+        # Android: 尝试多种方式获取app根目录
+        try:
+            from android import app as android_app
+            return android_app.get_app_root_dir()
+        except Exception:
+            pass
+        # 回退到__file__所在目录
+        return os.path.dirname(os.path.abspath(__file__))
     return os.path.dirname(os.path.abspath(__file__))
 
 def prepare_fonts():
@@ -192,7 +225,13 @@ def register_fonts():
     
     return chinese_font, emoji_font
 
-CHINESE_FONT, EMOJI_FONT = register_fonts()
+# 字体注册：包裹在try-except中防止Android启动崩溃
+try:
+    CHINESE_FONT, EMOJI_FONT = register_fonts()
+except Exception as e:
+    print(f"[WARN] 字体注册失败: {e}")
+    CHINESE_FONT = None
+    EMOJI_FONT = None
 
 PINYIN_DICT = {
     'bu': ['不', '布', '步', '部', '补', '捕', '簿', '卜'],
@@ -419,7 +458,14 @@ class EmotionAnalyzer:
         ]
         negation_words = ['不', '没', '无', '从未', '绝不', '没有', '勿', '别', '非', '未']
         
-        words = jieba.lcut(text)
+        # jieba分词：如果jieba不可用，用简单字符分割
+        if _jieba_ok:
+            try:
+                words = jieba.lcut(text)
+            except Exception:
+                words = list(text)
+        else:
+            words = list(text)
         
         positive_count = 0
         negative_count = 0
@@ -1454,6 +1500,19 @@ class ChatHistory(ScrollView):
 
 class MoodBotApp(App):
     def build(self):
+        try:
+            return self._build()
+        except Exception as e:
+            print(f"[ERROR] build()失败: {e}")
+            traceback.print_exc()
+            # 返回一个最简单的UI，避免完全黑屏
+            layout = BoxLayout(orientation='vertical')
+            label = Label(text=f'MoodBot启动失败\n{e}\n\n请重新安装应用',
+                         font_size=dp(16), color=(1, 0, 0, 1))
+            layout.add_widget(label)
+            return layout
+
+    def _build(self):
         self.title = 'MoodBot - 情绪伙伴'
         self.analyzer = EmotionAnalyzer()
         self.conversation = ConversationManager()
@@ -1603,11 +1662,19 @@ class MoodBotApp(App):
         text = self.text_input.text.strip()
         if not text:
             return
-        
+
         self.text_input.text = ''
         self.chat_history.add_message(text, is_user=True)
-        
-        Clock.schedule_once(lambda dt: self.process_message(text), 0.5)
+
+        Clock.schedule_once(lambda dt: self._safe_process(text), 0.5)
+
+    def _safe_process(self, text):
+        try:
+            self.process_message(text)
+        except Exception as e:
+            print(f"[ERROR] process_message失败: {e}")
+            traceback.print_exc()
+            self.chat_history.add_message('抱歉，我遇到了一点问题，请再说一次～', is_user=False)
     
     def get_comfort_response(self, text, emotion, confidence):
         import random

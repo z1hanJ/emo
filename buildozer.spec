@@ -4,7 +4,7 @@ title = MoodBot
 package.name = moodbot
 package.domain = org.example
 source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,json,txt,ttf,ttc
+source.include_exts = py,png,jpg,kv,atlas,json,txt,ttf,ttc,cfg
 version = 0.3.0
 
 # 注意：onnxruntime-python不能直接安卓编译，若要用onnxruntime-android需要特殊whl；
