@@ -1842,7 +1842,9 @@ class MoodBotApp(App):
         # 焦点变化时触发键盘联动
         self.text_input.bind(focus=self.on_input_focus)
 
-        send_btn = Button(text='发送', font_size=dp(16), size_hint_x=0.2, background_color=(0.4, 0.3, 0.6, 1))
+        send_btn = Button(text='发送', font_size=dp(16), size_hint_x=0.2,
+                         background_color=(0.4, 0.3, 0.6, 1),
+                         background_normal='', background_down='')
         if CHINESE_FONT:
             send_btn.font_name = CHINESE_FONT
         send_btn.bind(on_press=self.send_message)
