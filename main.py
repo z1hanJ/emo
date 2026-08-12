@@ -56,6 +56,12 @@ if platform != 'android':
     Config.set('graphics', 'height', '700')
     Config.set('graphics', 'minimum_width', '300')
     Config.set('graphics', 'minimum_height', '500')
+    Config.set('graphics', 'window_state', 'hidden')
+
+# Android: 隐藏窗口边框/标题栏，防止出现系统控制按钮
+if platform == 'android':
+    from kivy.config import Config as _Cfg
+    _Cfg.set('graphics', 'borderless', '1')
 
 # Android端跳过可能导致问题的Config设置
 if platform != 'android':
@@ -1794,16 +1800,20 @@ class MoodBotApp(App):
         if CHINESE_FONT:
             header_text.font_name = CHINESE_FONT
 
-        # 会话列表按钮
-        sessions_btn = Button(text='☰', font_size=dp(18), size_hint_x=None, width=dp(40),
-                             background_color=(0.3, 0.4, 0.5, 1), background_normal='')
+        # 会话列表按钮 — 用文字替代Unicode符号，避免字体缺失
+        sessions_btn = Button(text='会话', font_size=dp(14), size_hint_x=None, width=dp(55),
+                             background_color=(0.3, 0.4, 0.5, 1),
+                             background_normal='', background_down='')
         if CHINESE_FONT:
             sessions_btn.font_name = CHINESE_FONT
         sessions_btn.bind(on_press=self.open_session_list)
 
-        # 设置按钮
-        settings_btn = Button(text='⚙', font_size=dp(20), size_hint_x=None, width=dp(40),
-                             background_color=(0.3, 0.3, 0.4, 1), background_normal='')
+        # 设置按钮 — 用文字替代Unicode符号
+        settings_btn = Button(text='设置', font_size=dp(14), size_hint_x=None, width=dp(55),
+                             background_color=(0.3, 0.3, 0.4, 1),
+                             background_normal='', background_down='')
+        if CHINESE_FONT:
+            settings_btn.font_name = CHINESE_FONT
         settings_btn.bind(on_press=self.open_settings)
 
         header_layout.add_widget(emoji_label)
@@ -1972,7 +1982,8 @@ class MoodBotApp(App):
         if CHINESE_FONT:
             title_label.font_name = CHINESE_FONT
         new_btn = Button(text='+ 新建', font_size=dp(14), size_hint_x=None, width=dp(70),
-                        background_color=(0.2, 0.6, 0.3, 1), background_normal='')
+                        background_color=(0.2, 0.6, 0.3, 1),
+                        background_normal='', background_down='')
         if CHINESE_FONT:
             new_btn.font_name = CHINESE_FONT
         title_layout.add_widget(title_label)
@@ -2003,7 +2014,8 @@ class MoodBotApp(App):
 
         # 关闭按钮
         close_btn = Button(text='关闭', font_size=dp(14), size_hint_y=None, height=dp(40),
-                          background_color=(0.3, 0.3, 0.3, 1), background_normal='')
+                          background_color=(0.3, 0.3, 0.3, 1),
+                          background_normal='', background_down='')
         if CHINESE_FONT:
             close_btn.font_name = CHINESE_FONT
         content.add_widget(close_btn)
@@ -2033,34 +2045,31 @@ class MoodBotApp(App):
         popup.open()
 
     def _build_session_item(self, session, is_first):
-        """构建单个会话列表项"""
+        """构建单个会话列表项 — 使用Button容器确保可靠触摸"""
         sid = session['id']
         title = session.get('title', '新会话')
         is_active = (sid == self.history_store._current_session)
         msg_count = len(self.history_store.get_messages_by_session(sid))
 
-        # 背景：激活会话高亮
-        item_layout = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(50),
-                               spacing=dp(8), padding=[dp(8), dp(2)])
-
+        # 用Button作为容器，确保整个区域可点击
         bg_color = (0.3, 0.5, 0.7, 1) if is_active else (0.2, 0.2, 0.25, 1)
-        with item_layout.canvas.before:
-            Color(*bg_color)
-            rect = Rectangle(size=item_layout.size, pos=item_layout.pos)
-        item_layout.bind(pos=lambda inst, val, r=rect: setattr(r, 'pos', val),
-                        size=lambda inst, val, r=rect: setattr(r, 'size', val))
+        item_btn = Button(size_hint_y=None, height=dp(50),
+                         background_color=bg_color,
+                         background_normal='', background_down='',
+                         on_press=lambda inst: self.switch_session(sid))
 
-        # 会话图标
-        icon = Label(text='💬', font_size=dp(18), size_hint_x=None, width=dp(30))
-        if EMOJI_FONT:
-            icon.font_name = EMOJI_FONT
-        elif CHINESE_FONT:
+        # 内部水平布局
+        inner = BoxLayout(orientation='horizontal', spacing=dp(8), padding=[dp(8), dp(2)])
+
+        # 会话图标 — 使用文字替代emoji
+        icon = Label(text='[聊]', font_size=dp(14), size_hint_x=None, width=dp(35),
+                     color=(1, 1, 1, 1))
+        if CHINESE_FONT:
             icon.font_name = CHINESE_FONT
 
         # 会话标题 + 消息数
-        info_text = f'{title}  ({msg_count}条)'
-        if is_active:
-            info_text = '▶ ' + info_text
+        prefix = '▶ ' if is_active else ''
+        info_text = f'{prefix}{title} ({msg_count}条)'
         title_label = Label(text=info_text, font_size=dp(14),
                            color=(1, 1, 0.8, 1) if is_active else (0.85, 0.85, 0.85, 1),
                            halign='left', valign='middle')
@@ -2068,26 +2077,25 @@ class MoodBotApp(App):
         if CHINESE_FONT:
             title_label.font_name = CHINESE_FONT
 
-        # 删除按钮
-        del_btn = Button(text='✕', font_size=dp(14), size_hint_x=None, width=dp(35),
-                        background_color=(0.7, 0.2, 0.2, 1), background_normal='')
+        # 删除按钮 — 阻止事件冒泡到父Button
+        del_btn = Button(text='删除', font_size=dp(12), size_hint_x=None, width=dp(45),
+                        background_color=(0.7, 0.2, 0.2, 1),
+                        background_normal='', background_down='')
         if CHINESE_FONT:
             del_btn.font_name = CHINESE_FONT
 
-        def do_switch(inst):
-            self.switch_session(sid)
-
         def do_delete(inst):
+            # 阻止事件继续传递
+            inst.cancel_release = True
             self.delete_session_from_list(sid)
 
-        item_layout.bind(on_touch_down=lambda inst, touch: do_switch(inst)
-                        if inst.collide_point(*touch.pos) else None)
         del_btn.bind(on_press=do_delete)
 
-        item_layout.add_widget(icon)
-        item_layout.add_widget(title_label)
-        item_layout.add_widget(del_btn)
-        return item_layout
+        inner.add_widget(icon)
+        inner.add_widget(title_label)
+        inner.add_widget(del_btn)
+        item_btn.add_widget(inner)
+        return item_btn
 
     def switch_session(self, session_id):
         """切换到指定会话"""
@@ -2151,7 +2159,8 @@ class MoodBotApp(App):
         self.candidate_layout.clear_widgets()
         for i, candidate in enumerate(candidates):
             btn = Button(text=f'{i+1} {candidate}', font_size=dp(14), size_hint_x=None, width=dp(55),
-                        background_color=(0.3, 0.3, 0.3, 1), background_normal='',
+                        background_color=(0.3, 0.3, 0.3, 1),
+                        background_normal='', background_down='',
                         color=(0.9, 0.9, 0.9, 1))
             if CHINESE_FONT:
                 btn.font_name = CHINESE_FONT
@@ -2505,7 +2514,8 @@ class MoodBotApp(App):
 
         # 删除单条消息
         btn_delete_one = Button(text='删除最近一条消息', font_size=dp(14), size_hint_y=None, height=dp(40),
-                               background_color=(0.8, 0.5, 0.2, 1), background_normal='')
+                               background_color=(0.8, 0.5, 0.2, 1),
+                               background_normal='', background_down='')
         if CHINESE_FONT:
             btn_delete_one.font_name = CHINESE_FONT
         btn_delete_one.bind(on_press=lambda x: self._delete_last_message())
@@ -2513,7 +2523,8 @@ class MoodBotApp(App):
 
         # 删除当前会话
         btn_delete_session = Button(text='删除当前会话', font_size=dp(14), size_hint_y=None, height=dp(40),
-                                   background_color=(0.8, 0.3, 0.3, 1), background_normal='')
+                                   background_color=(0.8, 0.3, 0.3, 1),
+                                   background_normal='', background_down='')
         if CHINESE_FONT:
             btn_delete_session.font_name = CHINESE_FONT
         btn_delete_session.bind(on_press=lambda x: self._delete_current_session())
@@ -2521,7 +2532,8 @@ class MoodBotApp(App):
 
         # 清空全部
         btn_clear_all = Button(text='一键清空全部聊天记录', font_size=dp(14), size_hint_y=None, height=dp(40),
-                              background_color=(0.9, 0.1, 0.1, 1), background_normal='')
+                              background_color=(0.9, 0.1, 0.1, 1),
+                              background_normal='', background_down='')
         if CHINESE_FONT:
             btn_clear_all.font_name = CHINESE_FONT
         btn_clear_all.bind(on_press=lambda x: self._clear_all_history())
@@ -2529,7 +2541,8 @@ class MoodBotApp(App):
 
         # 关闭按钮
         btn_close = Button(text='关闭', font_size=dp(14), size_hint_y=None, height=dp(40),
-                          background_color=(0.3, 0.3, 0.3, 1), background_normal='')
+                          background_color=(0.3, 0.3, 0.3, 1),
+                          background_normal='', background_down='')
         if CHINESE_FONT:
             btn_close.font_name = CHINESE_FONT
         content.add_widget(btn_close)
