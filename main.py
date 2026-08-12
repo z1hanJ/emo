@@ -43,11 +43,13 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.button import Button
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.graphics import Color, RoundedRectangle, Rectangle
 from kivy.core.text import LabelBase
 from kivy.config import Config
 from kivy.metrics import dp
+from kivy.core.window import Window
 
 if platform != 'android':
     Config.set('graphics', 'width', '400')
@@ -307,6 +309,19 @@ PINYIN_DICT = {
     'mu': ['目', '木', '母', '幕', '牧'],
 }
 
+# 预构建前缀索引，避免每次按键线性扫描全表
+_PINYIN_PREFIX_INDEX = {}
+for _p, _words in PINYIN_DICT.items():
+    for _i in range(1, len(_p) + 1):
+        _prefix = _p[:_i]
+        if _prefix not in _PINYIN_PREFIX_INDEX:
+            _PINYIN_PREFIX_INDEX[_prefix] = []
+        _PINYIN_PREFIX_INDEX[_prefix].append(_p)
+
+# 候选词缓存
+_candidate_cache = {}
+_CACHE_MAX = 50
+
 PHRASE_DICT = {
     'bu kai': ['不开'],
     'kai xin': ['开心', '凯心'],
@@ -377,35 +392,49 @@ PHRASE_DICT = {
 def get_pinyin_candidates(text):
     if not text:
         return []
-    
+
     text = text.lower().replace("'", "")
-    
+
+    # 缓存命中
+    if text in _candidate_cache:
+        return _candidate_cache[text]
+
     candidates = []
     parts = text.split()
-    
+
+    # 短语匹配（O(1)哈希查找）
     if len(parts) >= 3:
         three_pinyin = ' '.join(parts[-3:])
         if three_pinyin in PHRASE_DICT:
             candidates.extend(PHRASE_DICT[three_pinyin])
-    
+
     if len(parts) >= 2:
         two_pinyin = ' '.join(parts[-2:])
         if two_pinyin in PHRASE_DICT:
             candidates.extend(PHRASE_DICT[two_pinyin])
-    
+
+    # 精确单字匹配（O(1)哈希查找）
     if parts:
         last_part = parts[-1]
         if last_part in PINYIN_DICT:
             candidates.extend(PINYIN_DICT[last_part])
-    
-    if not candidates and not ' ' in text:
-        for pinyin, words in PINYIN_DICT.items():
-            if pinyin.startswith(text) or text.startswith(pinyin):
-                candidates.extend(words)
-                if len(candidates) >= 7:
-                    break
-    
-    return candidates[:7]
+
+    # 前缀匹配（使用预构建索引，O(1)查找）
+    if not candidates and ' ' not in text:
+        matched_keys = _PINYIN_PREFIX_INDEX.get(text, [])
+        for pinyin_key in matched_keys:
+            candidates.extend(PINYIN_DICT[pinyin_key])
+            if len(candidates) >= 7:
+                break
+
+    result = candidates[:7]
+
+    # 写入缓存
+    if len(_candidate_cache) >= _CACHE_MAX:
+        _candidate_cache.clear()
+    _candidate_cache[text] = result
+
+    return result
 
 class EmotionAnalyzer:
     def __init__(self):
@@ -1487,16 +1516,135 @@ class ChatBubble(BoxLayout):
         self.rect.pos = self.pos
         self.rect.size = self.size
 
+class ChatHistoryStore:
+    """聊天记录持久化存储 — JSON文件方式，支持增删改查"""
+
+    def __init__(self, filepath):
+        self.filepath = filepath
+        os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
+        self.messages = []
+        self._load()
+
+    def _load(self):
+        """从磁盘加载历史记录"""
+        try:
+            if os.path.exists(self.filepath):
+                with open(self.filepath, 'r', encoding='utf-8') as f:
+                    self.messages = json.load(f)
+        except Exception as e:
+            print(f"[WARN] 加载聊天记录失败: {e}")
+            self.messages = []
+
+    def _save(self):
+        """保存到磁盘"""
+        try:
+            with open(self.filepath, 'w', encoding='utf-8') as f:
+                json.dump(self.messages, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[WARN] 保存聊天记录失败: {e}")
+
+    def add(self, text, is_user, emotion=None, confidence=0.0):
+        """添加一条消息，返回消息ID"""
+        import time
+        msg_id = str(int(time.time() * 1000)) + str(len(self.messages))
+        msg = {
+            'id': msg_id,
+            'text': text,
+            'is_user': is_user,
+            'emotion': emotion,
+            'confidence': confidence,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'session_id': getattr(self, '_current_session', 'default')
+        }
+        self.messages.append(msg)
+        self._save()
+        return msg_id
+
+    def delete_by_id(self, msg_id):
+        """删除单条消息"""
+        before = len(self.messages)
+        self.messages = [m for m in self.messages if m.get('id') != msg_id]
+        self._save()
+        return len(self.messages) < before
+
+    def delete_session(self, session_id):
+        """删除某个完整会话"""
+        before = len(self.messages)
+        self.messages = [m for m in self.messages if m.get('session_id') != session_id]
+        self._save()
+        return len(self.messages) < before
+
+    def clear_all(self):
+        """清空全部聊天记录"""
+        self.messages = []
+        self._save()
+
+    def get_all(self):
+        """获取全部消息"""
+        return list(self.messages)
+
+    def get_session_ids(self):
+        """获取所有会话ID"""
+        return list(set(m.get('session_id', 'default') for m in self.messages))
+
+    def get_messages_by_session(self, session_id):
+        """获取某个会话的消息"""
+        return [m for m in self.messages if m.get('session_id') == session_id]
+
+    def get_context_for_ai(self, max_count=10):
+        """获取最近的对话上下文供AI复用"""
+        recent = self.messages[-max_count:] if len(self.messages) > max_count else self.messages
+        return [{'role': 'user' if m['is_user'] else 'bot', 'text': m['text'],
+                 'emotion': m.get('emotion')} for m in recent]
+
+
 class ChatHistory(ScrollView):
     def __init__(self, **kwargs):
         super(ChatHistory, self).__init__(**kwargs)
         self.layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(10))
+        self.layout.bind(minimum_height=self.layout.setter('height'))
         self.add_widget(self.layout)
-    
-    def add_message(self, text, is_user=False, emotion=None, confidence=0.0):
+        self._bubble_map = {}  # msg_id -> ChatBubble 映射
+
+    def add_message(self, text, is_user=False, emotion=None, confidence=0.0, msg_id=None):
         bubble = ChatBubble(text, is_user=is_user, emotion=emotion, confidence=confidence)
+        if msg_id:
+            bubble.msg_id = msg_id
+            self._bubble_map[msg_id] = bubble
         self.layout.add_widget(bubble)
         Clock.schedule_once(lambda dt: self.scroll_to(bubble), 0.1)
+        return bubble
+
+    def remove_message(self, msg_id):
+        """从UI移除单条消息"""
+        bubble = self._bubble_map.pop(msg_id, None)
+        if bubble:
+            self.layout.remove_widget(bubble)
+            return True
+        return False
+
+    def clear_all(self):
+        """清空所有UI消息"""
+        self.layout.clear_widgets()
+        self._bubble_map.clear()
+
+    def load_from_store(self, store):
+        """从持久化存储加载消息到UI"""
+        self.clear_all()
+        for msg in store.get_all():
+            self.add_message(
+                msg['text'],
+                is_user=msg.get('is_user', False),
+                emotion=msg.get('emotion'),
+                confidence=msg.get('confidence', 0.0),
+                msg_id=msg.get('id')
+            )
+        Clock.schedule_once(lambda dt: self.scroll_to_bottom(), 0.2)
+
+    def scroll_to_bottom(self):
+        """滚动到底部最新消息"""
+        if self.layout.children:
+            Clock.schedule_once(lambda dt: self.scroll_to(self.layout.children[0]), 0.05)
 
 class MoodBotApp(App):
     def build(self):
@@ -1518,64 +1666,104 @@ class MoodBotApp(App):
         self.conversation = ConversationManager()
         self.intent_analyzer = IntentAnalyzer()
         self.response_generator = AdvancedResponseGenerator(PersonaConfig())
-        
+
+        # 输入法防抖：避免每次按键都重建候选词
+        self._input_debounce_event = None
+        self._last_candidates = []
+
+        # 键盘联动状态
+        self._keyboard_visible = False
+        self._window_height = Window.height
+
         app_root = get_app_root()
-        
+
+        # 聊天记录持久化存储
+        history_path = os.path.join(app_root, 'data', 'chat_history.json')
+        self.history_store = ChatHistoryStore(history_path)
+        self.history_store._current_session = self.session_start_time.isoformat() if hasattr(self, 'session_start_time') else 'default'
+
         # Android: 使用纯规则匹配，不加载ONNX模型
         # 桌面端: 尝试加载ONNX模型（如果存在）
         if platform != 'android':
             model_path = os.path.join(app_root, 'data', 'emotion_model.onnx')
             config_path = os.path.join(app_root, 'data', 'model_config.json')
-            
+
             if os.path.exists(model_path) and os.path.exists(config_path):
                 self.analyzer.load_model(model_path, config_path)
-        
-        main_layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(10))
-        
-        header_layout = BoxLayout(orientation='horizontal', size_hint_y=0.1, padding=[dp(5), dp(5)])
-        
+
+        main_layout = BoxLayout(orientation='vertical', spacing=dp(5), padding=dp(5))
+
+        # 头部：固定高度
+        header_layout = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(45), padding=[dp(5), dp(5)])
+
         emoji_label = Label(text='🤖', font_size=dp(22), size_hint_x=None, width=dp(40))
         if EMOJI_FONT:
             emoji_label.font_name = EMOJI_FONT
         elif CHINESE_FONT:
             emoji_label.font_name = CHINESE_FONT
-        
+
         header_text = Label(text='MoodBot 情绪伙伴', font_size=dp(18), bold=True, color=(1, 1, 1, 1))
         if CHINESE_FONT:
             header_text.font_name = CHINESE_FONT
-        
+
+        # 设置按钮
+        settings_btn = Button(text='⚙', font_size=dp(20), size_hint_x=None, width=dp(40),
+                             background_color=(0.3, 0.3, 0.4, 1), background_normal='')
+        settings_btn.bind(on_press=self.open_settings)
+
         header_layout.add_widget(emoji_label)
         header_layout.add_widget(header_text)
-        
+        header_layout.add_widget(settings_btn)
+
         with header_layout.canvas.before:
             Color(0.4, 0.3, 0.6, 1)
             self.header_rect = Rectangle(size=header_layout.size, pos=header_layout.pos)
         header_layout.bind(pos=self.update_header_rect, size=self.update_header_rect)
-        
-        self.chat_history = ChatHistory(size_hint_y=0.7)
-        welcome_msg = self.response_generator.persona.CONVERSATION_STARTERS[0]
-        self.chat_history.add_message(welcome_msg, is_user=False)
-        self.conversation.add_message('bot', welcome_msg, intent='greeting')
-        
-        input_layout = BoxLayout(spacing=dp(5), size_hint_y=0.15)
+
+        # 聊天区域：填充剩余空间
+        self.chat_history = ChatHistory(size_hint_y=1)
+
+        # 加载历史记录；无历史时显示欢迎消息
+        stored = self.history_store.get_all()
+        if stored:
+            self.chat_history.load_from_store(self.history_store)
+            # 恢复AI上下文
+            for msg in stored[-12:]:
+                self.conversation.add_message(
+                    'user' if msg.get('is_user') else 'bot',
+                    msg['text'],
+                    emotion=msg.get('emotion')
+                )
+        else:
+            welcome_msg = self.response_generator.persona.CONVERSATION_STARTERS[0]
+            msg_id = self.history_store.add(welcome_msg, is_user=False)
+            self.chat_history.add_message(welcome_msg, is_user=False, msg_id=msg_id)
+            self.conversation.add_message('bot', welcome_msg, intent='greeting')
+
+        # 输入栏：固定高度
+        input_layout = BoxLayout(spacing=dp(5), size_hint_y=None, height=dp(48))
         self.text_input = TextInput(hint_text='输入你的心情...', font_size=dp(16), size_hint_x=0.8, padding=[dp(10), dp(5)])
         if CHINESE_FONT:
             self.text_input.font_name = CHINESE_FONT
         self.text_input.bind(on_text_validate=self.send_message)
         self.text_input.bind(text=self.on_text_input)
-        
+        # 焦点变化时触发键盘联动
+        self.text_input.bind(focus=self.on_input_focus)
+
         send_btn = Button(text='发送', font_size=dp(16), size_hint_x=0.2, background_color=(0.4, 0.3, 0.6, 1))
         if CHINESE_FONT:
             send_btn.font_name = CHINESE_FONT
         send_btn.bind(on_press=self.send_message)
-        
+
         input_layout.add_widget(self.text_input)
         input_layout.add_widget(send_btn)
-        
-        self.candidate_layout = BoxLayout(spacing=dp(5), size_hint_y=0.08, padding=[dp(10), dp(0)])
+
+        # 候选词区域：固定高度，默认隐藏
+        self.candidate_layout = BoxLayout(spacing=dp(5), size_hint_y=None, height=dp(38), padding=[dp(10), dp(0)])
         self.candidate_layout.opacity = 0
-        
-        stats_layout = GridLayout(cols=3, size_hint_y=0.1)
+
+        # 统计栏：固定高度
+        stats_layout = GridLayout(cols=3, size_hint_y=None, height=dp(35))
         
         positive_box = BoxLayout(orientation='horizontal', spacing=dp(3))
         pos_emoji = Label(text='😊', font_size=dp(14), size_hint_x=None, width=dp(22))
@@ -1622,27 +1810,107 @@ class MoodBotApp(App):
         main_layout.add_widget(input_layout)
         main_layout.add_widget(self.candidate_layout)
         main_layout.add_widget(stats_layout)
-        
+
+        # 保存固定布局元素的引用，用于键盘联动时显隐
+        self._stats_layout = stats_layout
+        self._header_layout = header_layout
+
+        # 绑定窗口尺寸变化（Android键盘弹出/收起时触发）
+        Window.bind(on_resize=self.on_window_resize)
+
         self.emotion_counts = {'positive': 0, 'negative': 0, 'neutral': 0}
-        
+
         return main_layout
+
+    def on_window_resize(self, instance, width, height):
+        """窗口尺寸变化回调 — Android键盘弹出/收起时触发"""
+        old_height = self._window_height
+        self._window_height = height
+
+        # 高度减少超过20%判定为键盘弹出
+        if height < old_height * 0.8:
+            if not self._keyboard_visible:
+                self._keyboard_visible = True
+                self._on_keyboard_show()
+        else:
+            if self._keyboard_visible:
+                self._keyboard_visible = False
+                self._on_keyboard_hide()
+
+    def _on_keyboard_show(self):
+        """键盘弹出：隐藏统计栏和头部以节省空间，自动滚动到最新消息"""
+        # 隐藏统计栏
+        if hasattr(self, '_stats_layout'):
+            self._stats_layout.size_hint_y = None
+            self._stats_layout.height = 0
+        # 隐藏头部
+        if hasattr(self, '_header_layout'):
+            self._header_layout.size_hint_y = None
+            self._header_layout.height = 0
+        # 自动滚动到底部
+        Clock.schedule_once(lambda dt: self._scroll_to_bottom(), 0.1)
+
+    def _on_keyboard_hide(self):
+        """键盘收起：恢复统计栏和头部"""
+        if hasattr(self, '_stats_layout'):
+            self._stats_layout.height = dp(35)
+        if hasattr(self, '_header_layout'):
+            self._header_layout.height = dp(45)
+
+    def _scroll_to_bottom(self):
+        """滚动聊天记录到底部"""
+        try:
+            self.chat_history.scroll_to_bottom()
+        except Exception:
+            pass
+
+    def on_input_focus(self, instance, value):
+        """输入框获得/失去焦点回调"""
+        if value:
+            # 获得焦点（键盘即将弹出），延迟滚动到底部
+            Clock.schedule_once(lambda dt: self._scroll_to_bottom(), 0.2)
     
     def on_text_input(self, instance, value):
-        self.candidate_layout.clear_widgets()
-        
-        candidates = get_pinyin_candidates(value)
-        if candidates:
-            for i, candidate in enumerate(candidates):
-                btn = Button(text=f'{i+1} {candidate}', font_size=dp(14), size_hint_x=None, width=dp(55),
-                            background_color=(0.3, 0.3, 0.3, 1), background_normal='',
-                            color=(0.9, 0.9, 0.9, 1))
-                if CHINESE_FONT:
-                    btn.font_name = CHINESE_FONT
-                btn.bind(on_press=lambda btn, c=candidate: self.select_candidate(c))
-                self.candidate_layout.add_widget(btn)
-            self.candidate_layout.opacity = 1
-        else:
+        """文本输入回调 — 使用防抖延迟候选词计算，避免每次按键都重建组件"""
+        # 取消上一次的防抖回调
+        if self._input_debounce_event is not None:
+            self._input_debounce_event.cancel()
+
+        # 空输入立即隐藏候选区
+        if not value.strip():
             self.candidate_layout.opacity = 0
+            self._last_candidates = []
+            return
+
+        # 延迟150ms后再计算候选词，避免快速输入时卡顿
+        self._input_debounce_event = Clock.schedule_once(
+            lambda dt: self._update_candidates(value), 0.15
+        )
+
+    def _update_candidates(self, value):
+        """实际计算并更新候选词（防抖后调用）"""
+        candidates = get_pinyin_candidates(value)
+
+        # 候选词未变化则跳过UI重建
+        if candidates == self._last_candidates:
+            return
+        self._last_candidates = candidates
+
+        if not candidates:
+            self.candidate_layout.opacity = 0
+            return
+
+        # 增量更新：只清除和重建变化的部分
+        self.candidate_layout.clear_widgets()
+        for i, candidate in enumerate(candidates):
+            btn = Button(text=f'{i+1} {candidate}', font_size=dp(14), size_hint_x=None, width=dp(55),
+                        background_color=(0.3, 0.3, 0.3, 1), background_normal='',
+                        color=(0.9, 0.9, 0.9, 1))
+            if CHINESE_FONT:
+                btn.font_name = CHINESE_FONT
+            btn.bind(on_press=lambda btn, c=candidate: self.select_candidate(c))
+            self.candidate_layout.add_widget(btn)
+        self.candidate_layout.opacity = 1
     
     def select_candidate(self, candidate):
         text = self.text_input.text
@@ -1653,6 +1921,9 @@ class MoodBotApp(App):
         else:
             text = candidate
         self.text_input.text = text
+        # 选中后隐藏候选区
+        self.candidate_layout.opacity = 0
+        self._last_candidates = []
     
     def update_header_rect(self, *args):
         self.header_rect.size = args[0].size
@@ -1664,7 +1935,8 @@ class MoodBotApp(App):
             return
 
         self.text_input.text = ''
-        self.chat_history.add_message(text, is_user=True)
+        msg_id = self.history_store.add(text, is_user=True)
+        self.chat_history.add_message(text, is_user=True, msg_id=msg_id)
 
         Clock.schedule_once(lambda dt: self._safe_process(text), 0.5)
 
@@ -1674,7 +1946,9 @@ class MoodBotApp(App):
         except Exception as e:
             print(f"[ERROR] process_message失败: {e}")
             traceback.print_exc()
-            self.chat_history.add_message('抱歉，我遇到了一点问题，请再说一次～', is_user=False)
+            err_msg = '抱歉，我遇到了一点问题，请再说一次～'
+            msg_id = self.history_store.add(err_msg, is_user=False)
+            self.chat_history.add_message(err_msg, is_user=False, msg_id=msg_id)
     
     def get_comfort_response(self, text, emotion, confidence):
         import random
@@ -1954,12 +2228,102 @@ class MoodBotApp(App):
         )
         
         self.conversation.add_message('bot', response, emotion=emotion, intent=intent_info['primary'])
-        self.chat_history.add_message(response, is_user=False, emotion=emotion, confidence=confidence)
+        msg_id = self.history_store.add(response, is_user=False, emotion=emotion, confidence=confidence)
+        self.chat_history.add_message(response, is_user=False, emotion=emotion, confidence=confidence, msg_id=msg_id)
     
     def update_stats(self):
         self.positive_count.text = f'积极: {self.emotion_counts["positive"]}'
         self.negative_count.text = f'消极: {self.emotion_counts["negative"]}'
         self.neutral_count.text = f'中性: {self.emotion_counts["neutral"]}'
+
+    # ==================== 设置页面 ====================
+
+    def open_settings(self, instance):
+        """打开设置Popup"""
+        content = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(15))
+
+        title = Label(text='聊天数据管理', font_size=dp(18), bold=True, size_hint_y=None, height=dp(40))
+        if CHINESE_FONT:
+            title.font_name = CHINESE_FONT
+        content.add_widget(title)
+
+        # 统计信息
+        msg_count = len(self.history_store.get_all())
+        session_count = len(self.history_store.get_session_ids())
+        info = Label(text=f'总消息数: {msg_count}\n会话数: {session_count}',
+                    font_size=dp(14), size_hint_y=None, height=dp(50))
+        if CHINESE_FONT:
+            info.font_name = CHINESE_FONT
+        content.add_widget(info)
+
+        # 删除单条消息
+        btn_delete_one = Button(text='删除最近一条消息', font_size=dp(14), size_hint_y=None, height=dp(40),
+                               background_color=(0.8, 0.5, 0.2, 1), background_normal='')
+        if CHINESE_FONT:
+            btn_delete_one.font_name = CHINESE_FONT
+        btn_delete_one.bind(on_press=lambda x: self._delete_last_message())
+        content.add_widget(btn_delete_one)
+
+        # 删除当前会话
+        btn_delete_session = Button(text='删除当前会话', font_size=dp(14), size_hint_y=None, height=dp(40),
+                                   background_color=(0.8, 0.3, 0.3, 1), background_normal='')
+        if CHINESE_FONT:
+            btn_delete_session.font_name = CHINESE_FONT
+        btn_delete_session.bind(on_press=lambda x: self._delete_current_session())
+        content.add_widget(btn_delete_session)
+
+        # 清空全部
+        btn_clear_all = Button(text='一键清空全部聊天记录', font_size=dp(14), size_hint_y=None, height=dp(40),
+                              background_color=(0.9, 0.1, 0.1, 1), background_normal='')
+        if CHINESE_FONT:
+            btn_clear_all.font_name = CHINESE_FONT
+        btn_clear_all.bind(on_press=lambda x: self._clear_all_history())
+        content.add_widget(btn_clear_all)
+
+        # 关闭按钮
+        btn_close = Button(text='关闭', font_size=dp(14), size_hint_y=None, height=dp(40),
+                          background_color=(0.3, 0.3, 0.3, 1), background_normal='')
+        if CHINESE_FONT:
+            btn_close.font_name = CHINESE_FONT
+        content.add_widget(btn_close)
+
+        popup = Popup(title='设置', content=content, size_hint=(0.85, 0.6),
+                     auto_dismiss=True, background_color=(0.15, 0.15, 0.18, 0.95))
+        if CHINESE_FONT:
+            popup.title_font_name = CHINESE_FONT
+        btn_close.bind(on_press=popup.dismiss)
+        popup.open()
+
+    def _delete_last_message(self):
+        """删除最近一条消息"""
+        all_msgs = self.history_store.get_all()
+        if not all_msgs:
+            return
+        last_msg = all_msgs[-1]
+        msg_id = last_msg.get('id')
+        if msg_id and self.history_store.delete_by_id(msg_id):
+            self.chat_history.remove_message(msg_id)
+            print(f"[INFO] 已删除消息: {msg_id}")
+
+    def _delete_current_session(self):
+        """删除当前会话的所有消息"""
+        session_id = getattr(self.history_store, '_current_session', 'default')
+        if self.history_store.delete_session(session_id):
+            self.chat_history.load_from_store(self.history_store)
+            print(f"[INFO] 已删除会话: {session_id}")
+
+    def _clear_all_history(self):
+        """清空全部聊天记录"""
+        self.history_store.clear_all()
+        self.chat_history.clear_all()
+        # 重新显示欢迎消息
+        welcome_msg = self.response_generator.persona.CONVERSATION_STARTERS[0]
+        msg_id = self.history_store.add(welcome_msg, is_user=False)
+        self.chat_history.add_message(welcome_msg, is_user=False, msg_id=msg_id)
+        # 重置统计
+        self.emotion_counts = {'positive': 0, 'negative': 0, 'neutral': 0}
+        self.update_stats()
+        print("[INFO] 已清空全部聊天记录")
 
 if __name__ == '__main__':
     MoodBotApp().run()

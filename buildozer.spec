@@ -30,6 +30,10 @@ p4a.bootstrap = sdl2
 fullscreen = 0
 orientation = portrait
 
+# 软键盘模式：adjustResize 让窗口在键盘弹出时自动缩小，
+# 配合Kivy的Window.size监听实现输入框跟随键盘联动
+android.windowsoftinputmode = adjustResize
+
 android.use_aapt2 = True
 android.copy_libs = True
 android.delete_android_assets = True
