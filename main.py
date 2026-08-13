@@ -2087,15 +2087,15 @@ class MoodBotApp(App):
         # 内部水平布局
         inner = BoxLayout(orientation='horizontal', spacing=dp(8), padding=[dp(8), dp(2)])
 
-        # 会话图标 — 使用文字替代emoji
-        icon = Label(text='[聊]', font_size=dp(14), size_hint_x=None, width=dp(35),
-                     color=(1, 1, 1, 1))
+        # 会话图标 — 当前会话用实心圆标记，其他用空心圆
+        icon_text = '●' if is_active else '○'
+        icon = Label(text=icon_text, font_size=dp(12), size_hint_x=None, width=dp(25),
+                     color=(1, 0.9, 0.4, 1) if is_active else (0.5, 0.5, 0.5, 1))
         if CHINESE_FONT:
             icon.font_name = CHINESE_FONT
 
         # 会话标题 + 消息数
-        prefix = '▶ ' if is_active else ''
-        info_text = f'{prefix}{title} ({msg_count}条)'
+        info_text = f'{title} ({msg_count}条)'
         title_label = Label(text=info_text, font_size=dp(14),
                            color=(1, 1, 0.8, 1) if is_active else (0.85, 0.85, 0.85, 1),
                            halign='left', valign='middle')
@@ -2532,7 +2532,7 @@ class MoodBotApp(App):
         """打开设置Popup"""
         content = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(15))
 
-        title = Label(text='聊天数据管理', font_size=dp(18), bold=True, size_hint_y=None, height=dp(40))
+        title = Label(text='设置', font_size=dp(18), bold=True, size_hint_y=None, height=dp(40))
         if CHINESE_FONT:
             title.font_name = CHINESE_FONT
         content.add_widget(title)
@@ -2546,47 +2546,100 @@ class MoodBotApp(App):
             info.font_name = CHINESE_FONT
         content.add_widget(info)
 
+        # 可滚动区域放操作按钮，防止小屏幕溢出
+        scroll = ScrollView(size_hint_y=1)
+        btn_container = BoxLayout(orientation='vertical', spacing=dp(10), size_hint_y=None)
+        btn_container.bind(minimum_height=btn_container.setter('height'))
+
         # 删除单条消息
-        btn_delete_one = Button(text='删除最近一条消息', font_size=dp(14), size_hint_y=None, height=dp(40),
+        btn_delete_one = Button(text='删除最近一条消息', font_size=dp(14), size_hint_y=None, height=dp(42),
                                background_color=(0.8, 0.5, 0.2, 1),
                                background_normal='', background_down='')
         if CHINESE_FONT:
             btn_delete_one.font_name = CHINESE_FONT
-        btn_delete_one.bind(on_press=lambda x: self._delete_last_message())
-        content.add_widget(btn_delete_one)
+        btn_delete_one.bind(on_press=lambda x: self._confirm_action(
+            '确认删除最近一条消息？', self._delete_last_message))
+        btn_container.add_widget(btn_delete_one)
 
         # 删除当前会话
-        btn_delete_session = Button(text='删除当前会话', font_size=dp(14), size_hint_y=None, height=dp(40),
+        btn_delete_session = Button(text='删除当前会话', font_size=dp(14), size_hint_y=None, height=dp(42),
                                    background_color=(0.8, 0.3, 0.3, 1),
                                    background_normal='', background_down='')
         if CHINESE_FONT:
             btn_delete_session.font_name = CHINESE_FONT
-        btn_delete_session.bind(on_press=lambda x: self._delete_current_session())
-        content.add_widget(btn_delete_session)
+        btn_delete_session.bind(on_press=lambda x: self._confirm_action(
+            '确认删除当前会话？此操作不可恢复。', self._delete_current_session))
+        btn_container.add_widget(btn_delete_session)
 
         # 清空全部
-        btn_clear_all = Button(text='一键清空全部聊天记录', font_size=dp(14), size_hint_y=None, height=dp(40),
+        btn_clear_all = Button(text='一键清空全部聊天记录', font_size=dp(14), size_hint_y=None, height=dp(42),
                               background_color=(0.9, 0.1, 0.1, 1),
                               background_normal='', background_down='')
         if CHINESE_FONT:
             btn_clear_all.font_name = CHINESE_FONT
-        btn_clear_all.bind(on_press=lambda x: self._clear_all_history())
-        content.add_widget(btn_clear_all)
+        btn_clear_all.bind(on_press=lambda x: self._confirm_action(
+            '确认清空全部聊天记录？此操作不可恢复！', self._clear_all_history))
+        btn_container.add_widget(btn_clear_all)
+
+        scroll.add_widget(btn_container)
+        content.add_widget(scroll)
 
         # 关闭按钮
-        btn_close = Button(text='关闭', font_size=dp(14), size_hint_y=None, height=dp(40),
+        btn_close = Button(text='关闭', font_size=dp(14), size_hint_y=None, height=dp(42),
                           background_color=(0.3, 0.3, 0.3, 1),
                           background_normal='', background_down='')
         if CHINESE_FONT:
             btn_close.font_name = CHINESE_FONT
         content.add_widget(btn_close)
 
-        popup = Popup(title='设置', content=content, size_hint=(0.85, 0.6),
+        popup = Popup(title='设置', content=content, size_hint=(0.85, 0.65),
                      auto_dismiss=True, background_color=(0.15, 0.15, 0.18, 0.95))
         if CHINESE_FONT:
             popup.title_font_name = CHINESE_FONT
         btn_close.bind(on_press=popup.dismiss)
         popup.open()
+
+    def _confirm_action(self, message, callback):
+        """显示确认对话框，确认后执行回调"""
+        content = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(15))
+
+        msg_label = Label(text=message, font_size=dp(15), size_hint_y=None, height=dp(60),
+                         halign='center', valign='middle')
+        msg_label.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        if CHINESE_FONT:
+            msg_label.font_name = CHINESE_FONT
+        content.add_widget(msg_label)
+
+        btn_layout = BoxLayout(orientation='horizontal', spacing=dp(10), size_hint_y=None, height=dp(42))
+
+        btn_yes = Button(text='确认', font_size=dp(14),
+                        background_color=(0.8, 0.3, 0.3, 1),
+                        background_normal='', background_down='')
+        if CHINESE_FONT:
+            btn_yes.font_name = CHINESE_FONT
+
+        btn_no = Button(text='取消', font_size=dp(14),
+                       background_color=(0.3, 0.3, 0.3, 1),
+                       background_normal='', background_down='')
+        if CHINESE_FONT:
+            btn_no.font_name = CHINESE_FONT
+
+        btn_layout.add_widget(btn_yes)
+        btn_layout.add_widget(btn_no)
+        content.add_widget(btn_layout)
+
+        confirm_popup = Popup(title='确认操作', content=content, size_hint=(0.8, 0.4),
+                            auto_dismiss=True, background_color=(0.15, 0.15, 0.18, 0.95))
+        if CHINESE_FONT:
+            confirm_popup.title_font_name = CHINESE_FONT
+
+        def do_confirm(inst):
+            confirm_popup.dismiss()
+            callback()
+
+        btn_yes.bind(on_press=do_confirm)
+        btn_no.bind(on_press=confirm_popup.dismiss)
+        confirm_popup.open()
 
     def _delete_last_message(self):
         """删除最近一条消息"""
