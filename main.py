@@ -2047,10 +2047,8 @@ class MoodBotApp(App):
             close_btn.font_name = CHINESE_FONT
         content.add_widget(close_btn)
 
-        popup = Popup(title='会话管理', content=content, size_hint=(0.9, 0.7),
+        popup = Popup(title='', content=content, size_hint=(0.9, 0.7),
                      auto_dismiss=True, background_color=(0.12, 0.12, 0.15, 0.95))
-        if CHINESE_FONT:
-            popup.title_font_name = CHINESE_FONT
 
         def do_new_session(btn):
             sid = self.history_store.create_session('新会话')
@@ -2080,12 +2078,13 @@ class MoodBotApp(App):
 
         # 用Button作为容器，确保整个区域可点击（on_press稍后绑定）
         bg_color = (0.3, 0.5, 0.7, 1) if is_active else (0.2, 0.2, 0.25, 1)
-        item_btn = Button(size_hint_y=None, height=dp(50),
+        item_btn = Button(text='', size_hint_y=None, height=dp(50),
                          background_color=bg_color,
                          background_normal='', background_down='')
 
-        # 内部水平布局
-        inner = BoxLayout(orientation='horizontal', spacing=dp(8), padding=[dp(8), dp(2)])
+        # 内部水平布局 — 设置size_hint_x=1确保填满Button宽度
+        inner = BoxLayout(orientation='horizontal', spacing=dp(8), padding=[dp(8), dp(2)],
+                         size_hint_x=1, size_hint_y=1)
 
         # 会话图标 — 当前会话用实心圆标记，其他用空心圆
         icon_text = '●' if is_active else '○'
@@ -2094,14 +2093,21 @@ class MoodBotApp(App):
         if CHINESE_FONT:
             icon.font_name = CHINESE_FONT
 
-        # 会话标题 + 消息数
+        # 会话标题 + 消息数 — size_hint_x=1填满剩余空间，text_size延迟设置
         info_text = f'{title} ({msg_count}条)'
         title_label = Label(text=info_text, font_size=dp(14),
+                           size_hint_x=1,
                            color=(1, 1, 0.8, 1) if is_active else (0.85, 0.85, 0.85, 1),
                            halign='left', valign='middle')
-        title_label.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0], None)))
         if CHINESE_FONT:
             title_label.font_name = CHINESE_FONT
+
+        # 延迟设置text_size，避免初始size为0导致文字竖排
+        def _fix_text_size(inst, val):
+            if val[0] > 0:
+                inst.text_size = (val[0], None)
+                return True  # 解绑，只执行一次
+        title_label.bind(size=_fix_text_size)
 
         # 删除按钮 — 使用标志位防止点击冒泡到父Button触发会话切换
         del_btn = Button(text='删除', font_size=dp(12), size_hint_x=None, width=dp(45),
@@ -2592,10 +2598,8 @@ class MoodBotApp(App):
             btn_close.font_name = CHINESE_FONT
         content.add_widget(btn_close)
 
-        popup = Popup(title='设置', content=content, size_hint=(0.85, 0.65),
+        popup = Popup(title='', content=content, size_hint=(0.85, 0.65),
                      auto_dismiss=True, background_color=(0.15, 0.15, 0.18, 0.95))
-        if CHINESE_FONT:
-            popup.title_font_name = CHINESE_FONT
         btn_close.bind(on_press=popup.dismiss)
         popup.open()
 
@@ -2604,8 +2608,12 @@ class MoodBotApp(App):
         content = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(15))
 
         msg_label = Label(text=message, font_size=dp(15), size_hint_y=None, height=dp(60),
-                         halign='center', valign='middle')
-        msg_label.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+                         size_hint_x=1, halign='center', valign='middle')
+        def _fix_msg_size(inst, val):
+            if val[0] > 0:
+                inst.text_size = (val[0], None)
+                return True
+        msg_label.bind(size=_fix_msg_size)
         if CHINESE_FONT:
             msg_label.font_name = CHINESE_FONT
         content.add_widget(msg_label)
@@ -2628,10 +2636,8 @@ class MoodBotApp(App):
         btn_layout.add_widget(btn_no)
         content.add_widget(btn_layout)
 
-        confirm_popup = Popup(title='确认操作', content=content, size_hint=(0.8, 0.4),
+        confirm_popup = Popup(title='', content=content, size_hint=(0.8, 0.4),
                             auto_dismiss=True, background_color=(0.15, 0.15, 0.18, 0.95))
-        if CHINESE_FONT:
-            confirm_popup.title_font_name = CHINESE_FONT
 
         def do_confirm(inst):
             confirm_popup.dismiss()
