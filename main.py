@@ -56,7 +56,6 @@ if platform != 'android':
     Config.set('graphics', 'height', '700')
     Config.set('graphics', 'minimum_width', '300')
     Config.set('graphics', 'minimum_height', '500')
-    Config.set('graphics', 'window_state', 'hidden')
 
 # Android: 隐藏窗口边框/标题栏，防止出现系统控制按钮
 if platform == 'android':
@@ -519,12 +518,31 @@ class EmotionAnalyzer:
         
         if positive_count > negative_count:
             confidence = min(0.5 + positive_count * 0.08, 0.98)
-            return 'positive', confidence
+            emotion, final_confidence = 'positive', confidence
         elif negative_count > positive_count:
             confidence = min(0.5 + negative_count * 0.08, 0.98)
-            return 'negative', confidence
+            emotion, final_confidence = 'negative', confidence
         else:
-            return 'neutral', 0.5
+            emotion, final_confidence = 'neutral', 0.5
+
+        # ===== 否定词复合模式后处理（安全网）=====
+        # 同步自 src/model_integrator.py 的修复：确保复合否定词被正确识别为负面
+        # 避免 jieba 分词不一致导致否定词识别失败
+        compound_negative_patterns = [
+            '不开心', '不快乐', '不满意', '不如意', '不好受',
+            '不高兴', '不舒服', '不爽', '不爽快', '不轻松'
+        ]
+        compound_positive_patterns = ['不错', '不赖', '不凡', '不俗']
+        has_compound_negative = any(p in text for p in compound_negative_patterns)
+        has_compound_positive = any(p in text for p in compound_positive_patterns)
+        if has_compound_negative and not has_compound_positive:
+            emotion = 'negative'
+            final_confidence = max(final_confidence, 0.7)
+        elif has_compound_positive and not has_compound_negative:
+            emotion = 'positive'
+            final_confidence = max(final_confidence, 0.6)
+
+        return emotion, final_confidence
 
 class ConversationManager:
     MAX_HISTORY = 30
@@ -1740,6 +1758,8 @@ class MoodBotApp(App):
             layout = BoxLayout(orientation='vertical')
             label = Label(text=f'MoodBot启动失败\n{e}\n\n请重新安装应用',
                          font_size=dp(16), color=(1, 0, 0, 1))
+            if CHINESE_FONT:
+                label.font_name = CHINESE_FONT
             layout.add_widget(label)
             return layout
 
@@ -1926,16 +1946,21 @@ class MoodBotApp(App):
         # 高度变化超过50dp时判定为键盘弹出/收起
         if abs(h - old_h) > dp(50):
             if h < old_h:
-                # 键盘弹出：隐藏统计栏节省空间，延迟滚动到底部
+                # 键盘弹出：隐藏统计栏和候选词区域节省空间，延迟滚动到底部
                 self._keyboard_visible = True
                 if hasattr(self, '_stats_layout'):
                     self._stats_layout.height = 0
+                if hasattr(self, 'candidate_layout'):
+                    self.candidate_layout.height = 0
+                    self.candidate_layout.opacity = 0
                 Clock.schedule_once(lambda dt: self._scroll_to_bottom(), 0.15)
             else:
-                # 键盘收起：恢复统计栏
+                # 键盘收起：恢复统计栏和候选词区域
                 self._keyboard_visible = False
                 if hasattr(self, '_stats_layout'):
                     self._stats_layout.height = dp(35)
+                if hasattr(self, 'candidate_layout'):
+                    self.candidate_layout.height = dp(38)
 
     def _scroll_to_bottom(self):
         """滚动聊天记录到底部"""
@@ -2053,12 +2078,11 @@ class MoodBotApp(App):
         is_active = (sid == self.history_store._current_session)
         msg_count = len(self.history_store.get_messages_by_session(sid))
 
-        # 用Button作为容器，确保整个区域可点击
+        # 用Button作为容器，确保整个区域可点击（on_press稍后绑定）
         bg_color = (0.3, 0.5, 0.7, 1) if is_active else (0.2, 0.2, 0.25, 1)
         item_btn = Button(size_hint_y=None, height=dp(50),
                          background_color=bg_color,
-                         background_normal='', background_down='',
-                         on_press=lambda inst: self.switch_session(sid))
+                         background_normal='', background_down='')
 
         # 内部水平布局
         inner = BoxLayout(orientation='horizontal', spacing=dp(8), padding=[dp(8), dp(2)])
@@ -2079,19 +2103,27 @@ class MoodBotApp(App):
         if CHINESE_FONT:
             title_label.font_name = CHINESE_FONT
 
-        # 删除按钮 — 阻止事件冒泡到父Button
+        # 删除按钮 — 使用标志位防止点击冒泡到父Button触发会话切换
         del_btn = Button(text='删除', font_size=dp(12), size_hint_x=None, width=dp(45),
                         background_color=(0.7, 0.2, 0.2, 1),
                         background_normal='', background_down='')
         if CHINESE_FONT:
             del_btn.font_name = CHINESE_FONT
 
+        _delete_triggered = [False]
+
         def do_delete(inst):
-            # 阻止事件继续传递
-            inst.cancel_release = True
+            _delete_triggered[0] = True
             self.delete_session_from_list(sid)
 
+        def do_switch(inst):
+            if _delete_triggered[0]:
+                _delete_triggered[0] = False
+                return
+            self.switch_session(sid)
+
         del_btn.bind(on_press=do_delete)
+        item_btn.bind(on_press=do_switch)
 
         inner.add_widget(icon)
         inner.add_widget(title_label)
@@ -2507,7 +2539,7 @@ class MoodBotApp(App):
 
         # 统计信息
         msg_count = len(self.history_store.get_all())
-        session_count = len(self.history_store.get_session_ids())
+        session_count = len(self.history_store.get_sessions())
         info = Label(text=f'总消息数: {msg_count}\n会话数: {session_count}',
                     font_size=dp(14), size_hint_y=None, height=dp(50))
         if CHINESE_FONT:
